@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync/atomic"
 )
 
@@ -13,31 +14,36 @@ type apiConfig struct {
 
 func main() {
 	mux := http.NewServeMux()
-
 	cfg := &apiConfig{}
 
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("OK"))
+
+	normalizeMiddleware := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.URL.Path = strings.ReplaceAll(r.URL.Path, "//", "/")
+			next.ServeHTTP(w, r)
+		})
+	}
+
+	mux.HandleFunc("GET /api/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("OK"))
 	})
 
+	mux.HandleFunc("GET /admin/metrics", cfg.handleAdminMetrics)
+	mux.HandleFunc("POST /admin/reset", cfg.handleReset)
+
 	fsHandler := http.FileServer(http.Dir("./assets"))
-	mux.Handle("/app/assets", http.StripPrefix("/app/assets", fsHandler))
+	mux.Handle("/app/assets/", cfg.middlewareMetricsInc(
+		http.StripPrefix("/app/assets/", fsHandler),
+	))
 
 	appHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFile(w, r, "./index.html")
 	})
-
 	mux.Handle("/app", cfg.middlewareMetricsInc(appHandler))
-
-	mux.HandleFunc("/metrics", cfg.handleMetrics)
-
-	mux.HandleFunc("/reset", cfg.handleReset)
 
 	server := &http.Server{
 		Addr: ":8080",
-		Handler: mux,
+		Handler: normalizeMiddleware(mux),
 	}
 
 	log.Println("listening on http://localhost:8080")
@@ -54,16 +60,24 @@ func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	})
 }
 
-func (cfg *apiConfig) handleMetrics(w http.ResponseWriter, r *http.Request) {
-	count := cfg.fileServerHits.Load()
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "Hits: %d", count)
-}
-
 func (cfg *apiConfig) handleReset(w http.ResponseWriter, r *http.Request) {
 	cfg.fileServerHits.Store(0)
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("Hits reset to 0"))
+}
+
+func (cfg *apiConfig) handleAdminMetrics(w http.ResponseWriter, r *http.Request) {
+	count := cfg.fileServerHits.Load()
+	html := fmt.Sprintf(`
+	<html>
+		<body>
+			<h1>Welcome, Chirpy Admin</h1>
+			<p>Chirpy has been visited %d times!</p>
+		</body>
+	</html>`, count)
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(html))
 }
