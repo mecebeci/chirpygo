@@ -1,9 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync/atomic"
 )
@@ -40,6 +42,8 @@ func main() {
 		http.ServeFile(w, r, "./index.html")
 	})
 	mux.Handle("/app", cfg.middlewareMetricsInc(appHandler))
+
+	mux.HandleFunc("POST /api/validate_chirp", cfg.handleValidateChirp)
 
 	server := &http.Server{
 		Addr: ":8080",
@@ -80,4 +84,43 @@ func (cfg *apiConfig) handleAdminMetrics(w http.ResponseWriter, r *http.Request)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(html))
+}
+
+func (cfg *apiConfig) handleValidateChirp(w http.ResponseWriter, r *http.Request) {
+	type parameters struct {
+		Body string `json:"body"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Something went wrong"})
+		return
+	}
+
+	if len(params.Body) > 140 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Chirp is too long"})
+		return
+	}
+
+	profaneWords := []string{"kerfuffle", "sharbert", "fornax"}
+	cleanedBody := params.Body
+
+	for _, word := range profaneWords{
+		cleanedBody = replaceCaseInsensitive(cleanedBody, word, "****")
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"cleaned_body":cleanedBody})
+}
+
+func replaceCaseInsensitive(text, target, replacement string) string {
+	re := regexp.MustCompile(`(?i)\b` + target + `\b`)
+	return re.ReplaceAllString(text, replacement)
 }
